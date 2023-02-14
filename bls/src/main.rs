@@ -89,6 +89,7 @@ fn main() {
     let bc = G2Affine::from(b * c);
 
 
+
     let bx = ctx.fq2_assign_constant((b.x.c0, b.x.c1));
     let by = ctx.fq2_assign_constant((b.y.c0, b.y.c1));
     let b = AssignedG2Affine::new(
@@ -142,6 +143,8 @@ fn main() {
     end_timer!(timer);
 
     let proof = transcript.finalize();
+
+    println!("proof size: {}", proof.len());
 
     /*let params_verifier: ParamsVerifier<Bn256> = params.verifier(0).unwrap();
 
