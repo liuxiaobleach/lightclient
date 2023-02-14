@@ -1,8 +1,6 @@
 //! The hash circuit base on poseidon.
 
-use crate::poseidon::primitives::{
-    ConstantLengthIden3, Domain, Hash, P128Pow5T3, Spec, VariableLengthIden3,
-};
+use crate::poseidon::primitives::{ConstantLengthIden3, Domain, Hash, P128Pow5T3, Spec, Value, VariableLengthIden3};
 use halo2_proofs::arithmetic::FieldExt;
 use halo2_proofs::pairing::bn256::Fr;
 
@@ -58,7 +56,7 @@ impl MessageHashable for Fr {
 
 use crate::poseidon::{PoseidonInstructions, Pow5Chip, Pow5Config, StateWord, Var};
 use halo2_proofs::{
-    circuit::{Chip, Layouter, Region, Value},
+    circuit::{Chip, Layouter, Region},
     plonk::{Advice, Column, ConstraintSystem, Error, Expression, Fixed, Selector, TableColumn},
     poly::Rotation,
 };
@@ -369,7 +367,7 @@ impl<'d, Fp: Hashable, const STEP: usize> PoseidonHashChip<'d, Fp, STEP> {
             ),
         ] {
             for col in cols {
-                region.assign_advice(|| tip, *col, 0, || Value::known(Fp::zero()))?;
+                region.assign_advice(|| tip, *col, 0, || Ok(Fp::zero()))?;
             }
         }
 
@@ -389,7 +387,7 @@ impl<'d, Fp: Hashable, const STEP: usize> PoseidonHashChip<'d, Fp, STEP> {
             ),
         ] {
             for col in cols {
-                region.assign_advice(|| tip, *col, 1, || Value::known(Fp::zero()))?;
+                region.assign_advice(|| tip, *col, 1, || Ok(Fp::zero()))?;
             }
         }
 
@@ -402,7 +400,7 @@ impl<'d, Fp: Hashable, const STEP: usize> PoseidonHashChip<'d, Fp, STEP> {
                 || {
                     self.nil_msg_hash
                         .map(Value::known)
-                        .unwrap_or_else(Value::unknown)
+                        .unwrap_or_else(Value::unknown).inner.ok_or(Error::Synthesis)
                 },
             )?;
         }
@@ -410,7 +408,7 @@ impl<'d, Fp: Hashable, const STEP: usize> PoseidonHashChip<'d, Fp, STEP> {
             || "custom mark",
             config.hash_table[4],
             1,
-            || Value::known(Fp::one()),
+            || Ok(Fp::one()),
         )?;
 
         Ok(2)
@@ -499,7 +497,7 @@ impl<'d, Fp: Hashable, const STEP: usize> PoseidonHashChip<'d, Fp, STEP> {
                         || format!("state input {i}_{offset}"),
                         config.hash_table_aux[i],
                         offset,
-                        || Value::known(state_start[i]),
+                        || Value::known(state_start[i]).inner.ok_or(Error::Synthesis),
                     )
                 })
                 .collect::<Result<Vec<_>, _>>()?;
@@ -512,7 +510,7 @@ impl<'d, Fp: Hashable, const STEP: usize> PoseidonHashChip<'d, Fp, STEP> {
                         || format!("state output {i}_{offset}"),
                         config.hash_table_aux[j],
                         offset,
-                        || Value::known(state[i]),
+                        || Value::known(state[i]).inner.ok_or(Error::Synthesis),
                     )
                 })
                 .collect::<Result<Vec<_>, _>>()?;
@@ -541,7 +539,7 @@ impl<'d, Fp: Hashable, const STEP: usize> PoseidonHashChip<'d, Fp, STEP> {
                     || format!("{tip}_{offset}"),
                     col,
                     offset,
-                    || Value::known(val),
+                    || Value::known(val).inner.ok_or(Error::Synthesis),
                 )?;
             }
 
@@ -555,7 +553,7 @@ impl<'d, Fp: Hashable, const STEP: usize> PoseidonHashChip<'d, Fp, STEP> {
                             || format!("hash index_{ith}"),
                             config.hash_table[0],
                             ith,
-                            || Value::known(current_hash),
+                            || Value::known(current_hash).inner.ok_or(Error::Synthesis),
                         )
                         .map(|_| ())
                 })?;
@@ -587,7 +585,7 @@ impl<'d, Fp: Hashable, const STEP: usize> PoseidonHashChip<'d, Fp, STEP> {
                             || "STEP range check",
                             config.control_step_range,
                             i,
-                            || Value::known(Fp::from_u128(i as u128)),
+                            || Value::known(Fp::from_u128(i as u128)).inner.ok_or(Error::Synthesis),
                         )
                         .map(|_| ())
                 })
@@ -644,11 +642,12 @@ impl<Fp: FieldExt, const STEP: usize> Chip<Fp> for PoseidonHashChip<'_, Fp, STEP
 #[cfg(test)]
 mod tests {
     use super::*;
-    use halo2_proofs::halo2curves::group::ff::PrimeField;
+    use halo2_proofs::pairing::group::ff::PrimeField;
     use halo2_proofs::{circuit::SimpleFloorPlanner, plonk::Circuit};
 
     #[test]
     fn poseidon_hash() {
+        println!("hello, poseidon, this is poseidon_hash test");
         let b1: Fr = Fr::from_str_vartime("1").unwrap();
         let b2: Fr = Fr::from_str_vartime("2").unwrap();
 
