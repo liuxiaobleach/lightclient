@@ -1,0 +1,13 @@
+[package]
+name = "poseidonhash"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+halo2_proofs = { git = "https://github.com/junyu0312/halo2.git", branch = "gpu", default-features = true }
+lazy_static = "1.4.0"
+thiserror = "1.0"
+bitvec = "1"
+group = "0.12.1"

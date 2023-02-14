@@ -76,7 +76,7 @@ impl<N: FieldExt> Circuit<N> for TestCircuit<N> {
 }
 
 fn main() {
-    println!("Hello, world!");
+    println!("Hello, bls!");
 
     let ctx = Rc::new(RefCell::new(Context::new()));
     let mut ctx = GeneralScalarEccContext::<G1Affine, Fr>::new(ctx);
