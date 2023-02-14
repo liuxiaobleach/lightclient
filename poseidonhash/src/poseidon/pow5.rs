@@ -3,13 +3,13 @@ use std::iter;
 
 use halo2_proofs::{
     arithmetic::FieldExt,
-    circuit::{AssignedCell, Cell, Chip, Layouter, Region, Value},
+    circuit::{AssignedCell, Cell, Chip, Layouter, Region},
     plonk::{Advice, Any, Column, ConstraintSystem, Error, Expression, Fixed, Selector},
     poly::Rotation,
 };
 
 use super::{
-    primitives::{Absorbing, Domain, Mds, Spec, Squeezing, State},
+    primitives::{Absorbing, Domain, Mds, Spec, Squeezing, State, Value},
     PaddedWord, PoseidonInstructions, PoseidonSpongeInstructions,
 };
 
@@ -28,7 +28,7 @@ impl<F: FieldExt> Var<F> for AssignedCell<F, F> {
     }
 
     fn value(&self) -> Value<F> {
-        self.value().cloned()
+        Value { inner: self.value().cloned() }
     }
 }
 
@@ -401,7 +401,7 @@ impl<
                             || format!("load pad_{i}"),
                             config.rc_b[i],
                             1,
-                            || Value::known(padding_value),
+                            || Value::known(padding_value).inner.ok_or(Error::Synthesis),
                         )?,
                         _ => panic!("Input is not padded"),
                     };
@@ -426,9 +426,9 @@ impl<
                             2,
                             || {
                                 if let Some(inp) = input.get(i) {
-                                    initial_state[i].value() + inp.value()
+                                    (initial_state[i].value() + inp.value()).inner.ok_or(Error::Synthesis)
                                 } else {
-                                    initial_state[i].value()
+                                    initial_state[i].value().inner.ok_or(Error::Synthesis)
                                 }
                             },
                         )
@@ -475,7 +475,7 @@ impl<F: FieldExt> Var<F> for StateWord<F> {
     }
 
     fn value(&self) -> Value<F> {
-        self.0.value().cloned()
+        Value { inner: self.0.value().cloned() }
     }
 }
 
@@ -571,7 +571,7 @@ impl<F: FieldExt, const WIDTH: usize> Pow5State<F, WIDTH> {
                 || format!("round_{round} partial_sbox"),
                 config.partial_sbox,
                 offset,
-                || r[0],
+                || r[0].inner.ok_or(Error::Synthesis),
             )?;
 
             let p_mid: Vec<_> = m
@@ -591,7 +591,7 @@ impl<F: FieldExt, const WIDTH: usize> Pow5State<F, WIDTH> {
                     || format!("round_{} rc_{}", round + 1, i),
                     config.rc_b[i],
                     offset,
-                    || Value::known(config.round_constants[round + 1][i]),
+                    || Value::known(config.round_constants[round + 1][i]).inner.ok_or(Error::Synthesis),
                 )
             };
             for i in 0..WIDTH {
@@ -654,7 +654,7 @@ impl<F: FieldExt, const WIDTH: usize> Pow5State<F, WIDTH> {
                 || format!("round_{round} rc_{i}"),
                 config.rc_a[i],
                 offset,
-                || Value::known(config.round_constants[round][i]),
+                || Value::known(config.round_constants[round][i]).inner.ok_or(Error::Synthesis),
             )
         };
         for i in 0..WIDTH {
@@ -670,7 +670,7 @@ impl<F: FieldExt, const WIDTH: usize> Pow5State<F, WIDTH> {
                 || format!("round_{next_round} state_{i}"),
                 config.state[i],
                 offset + 1,
-                || value,
+                || value.inner.ok_or(Error::Synthesis),
             )?;
             Ok(StateWord(var))
         };
