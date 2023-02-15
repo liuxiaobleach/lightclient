@@ -8,6 +8,7 @@ edition = "2021"
 [dependencies]
 halo2_proofs = { git = "https://github.com/junyu0312/halo2.git", branch = "gpu", default-features = true }
 halo2ecc-s = { git = "https://github.com/DelphinusLab/halo2ecc-s.git", branch = "pairing", default-features = true }
+poseidonhash = { path = "../poseidonhash", version="0.1.0"}
 num-integer = "0.1"
 num-bigint = { version = "0.4", features = ["rand"] }
 rayon = "1.5.2"

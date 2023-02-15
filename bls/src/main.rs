@@ -12,6 +12,7 @@ use rand::rngs::OsRng;
 use halo2_proofs::pairing::group::Group;
 use halo2_proofs::arithmetic::Field;
 use halo2_proofs::circuit::{Layouter, SimpleFloorPlanner};
+use halo2_proofs::dev::MockProver;
 use halo2_proofs::plonk::{Circuit, ConstraintSystem, create_proof, Error, keygen_pk, keygen_vk};
 use halo2_proofs::poly::commitment::Params;
 use halo2_proofs::transcript::{Blake2bWrite, Challenge255};
@@ -20,11 +21,13 @@ use halo2ecc_s::circuit::base_chip::BaseChipOps;
 use halo2ecc_s::circuit::ecc_chip::EccChipBaseOps;
 use halo2ecc_s::circuit::fq12::{Fq12ChipOps, Fq2ChipOps};
 use halo2ecc_s::circuit::pairing_chip::PairingChipOps;
+use poseidonhash::hash::{PoseidonHashChip, PoseidonHashConfig, PoseidonHashTable};
 
 #[derive(Clone)]
-struct TestChipConfig {
+struct TestChipConfig<N: FieldExt> {
     base_chip_config: BaseChipConfig,
     range_chip_config: RangeChipConfig,
+    poseidon_chip_config: (PoseidonHashConfig<N>, usize),
 }
 
 #[derive(Default, Clone)]
@@ -32,9 +35,11 @@ struct TestCircuit<N: FieldExt> {
     records: Records<N>,
 }
 
+const TEST_STEP: usize = 32;
+const POSEIDON_MAX_ROW: usize =4;
 
-impl<N: FieldExt> Circuit<N> for TestCircuit<N> {
-    type Config = TestChipConfig;
+impl<N: FieldExt + poseidonhash::Hashable> Circuit<N> for TestCircuit<N> {
+    type Config = TestChipConfig<N>;
     type FloorPlanner = SimpleFloorPlanner;
 
     fn without_witnesses(&self) -> Self {
@@ -44,9 +49,15 @@ impl<N: FieldExt> Circuit<N> for TestCircuit<N> {
     fn configure(meta: &mut ConstraintSystem<N>) -> Self::Config {
         let base_chip_config = BaseChip::configure(meta);
         let range_chip_config = RangeChip::<N>::configure(meta);
+        let hash_tbl = [0; 5].map(|_| meta.advice_column());
+        let poseidon_chip_config = (
+            PoseidonHashConfig::configure_sub(meta, hash_tbl, TEST_STEP),
+            POSEIDON_MAX_ROW,
+        );
         TestChipConfig {
             base_chip_config,
             range_chip_config,
+            poseidon_chip_config,
         }
     }
 
@@ -57,6 +68,24 @@ impl<N: FieldExt> Circuit<N> for TestCircuit<N> {
     ) -> Result<(), Error> {
         let base_chip = BaseChip::new(config.base_chip_config);
         let range_chip = RangeChip::<N>::new(config.range_chip_config);
+
+        // poseidon
+        let message1 = [
+            N::from_str_vartime("1").unwrap(),
+            N::from_str_vartime("2").unwrap(),
+        ];
+        let poseidon_hash_table = PoseidonHashTable {
+            inputs: vec![message1],
+            ..Default::default()
+        };
+        let poseidon_chip = PoseidonHashChip::<N, TEST_STEP>::construct(
+            config.poseidon_chip_config.0,
+            &poseidon_hash_table,
+            POSEIDON_MAX_ROW,
+            false,
+            Some(N::from(42u64)),
+        );
+        poseidon_chip.load(&mut layouter).unwrap();
 
         range_chip.init_table(&mut layouter)?;
 
@@ -88,8 +117,6 @@ fn main() {
     let ac = a * c;
     let bc = G2Affine::from(b * c);
 
-
-
     let bx = ctx.fq2_assign_constant((b.x.c0, b.x.c1));
     let by = ctx.fq2_assign_constant((b.y.c0, b.y.c1));
     let b = AssignedG2Affine::new(
@@ -120,6 +147,12 @@ fn main() {
     };
 
     let k = 22;
+    let timer_mock_prover = start_timer!(|| "mock_prover");
+    let prover = MockProver::run(k, &circuit, vec![]).unwrap();
+    end_timer!(timer_mock_prover);
+    //assert_eq!(prover.verify(), Ok(()));
+
+    /*let k = 22;
 
     let timer = start_timer!(|| format!("build params with K = {}", k));
     let params: Params<halo2_proofs::pairing::bn256::G1Affine> = Params::<halo2_proofs::pairing::bn256::G1Affine>::unsafe_setup::<Bn256>(k);
@@ -144,7 +177,7 @@ fn main() {
 
     let proof = transcript.finalize();
 
-    println!("proof size: {}", proof.len());
+    println!("proof size: {}", proof.len());*/
 
     /*let params_verifier: ParamsVerifier<Bn256> = params.verifier(0).unwrap();
 
