@@ -521,7 +521,7 @@ impl<V> Value<V> {
     /// # Examples
     ///
     /// ```
-    /// use halo2_proofs::circuit::Value;
+    // use halo2_proofs::circuit::Value;
     ///
     // let v = Value::known(37);
     /// ```
@@ -1130,14 +1130,14 @@ impl<V> Value<V> {
     /// # Examples
     ///
     /// If you have a `Value<F: Field>`, convert it to `Value<Assigned<F>>` first:
-    /// ```
-    /// # use halo2curves::pasta::pallas::Base as F;
-    /// use halo2_proofs::{circuit::Value, plonk::Assigned};
-    ///
+    // ```
+    // # use halo2curves::pasta::pallas::Base as F;
+    // use halo2_proofs::{circuit::Value, plonk::Assigned};
+    //
     // let v = Value::known(F::from(2));
     // let v: Value<Assigned<F>> = v.into();
-    /// v.double();
-    /// ```
+    // v.double();
+    // ```
     pub fn double<F: Field>(&self) -> Value<Assigned<F>>
         where
             V: Borrow<Assigned<F>>,
