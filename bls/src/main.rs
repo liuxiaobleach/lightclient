@@ -1,4 +1,5 @@
 use std::cell::RefCell;
+use std::ops::Neg;
 use std::rc::Rc;
 use std::sync::Arc;
 use ark_std::{end_timer, start_timer};
@@ -9,14 +10,14 @@ use halo2ecc_s::circuit::base_chip::{BaseChip, BaseChipConfig};
 use halo2ecc_s::circuit::range_chip::{RangeChip, RangeChipConfig};
 use halo2ecc_s::context::{Context, GeneralScalarEccContext, Records};
 use rand::rngs::OsRng;
-use halo2_proofs::pairing::group::Group;
+use halo2_proofs::pairing::group::{Curve, Group};
 use halo2_proofs::arithmetic::Field;
 use halo2_proofs::circuit::{Layouter, SimpleFloorPlanner};
 use halo2_proofs::dev::MockProver;
 use halo2_proofs::plonk::{Circuit, ConstraintSystem, create_proof, Error, keygen_pk, keygen_vk};
 use halo2_proofs::poly::commitment::Params;
 use halo2_proofs::transcript::{Blake2bWrite, Challenge255};
-use halo2ecc_s::assign::{AssignedCondition, AssignedG2Affine};
+use halo2ecc_s::assign::{AssignedCondition, AssignedG2Affine, AssignedInteger, AssignedValue};
 use halo2ecc_s::circuit::base_chip::BaseChipOps;
 use halo2ecc_s::circuit::ecc_chip::EccChipBaseOps;
 use halo2ecc_s::circuit::fq12::{Fq12ChipOps, Fq2ChipOps};
@@ -33,6 +34,7 @@ struct TestChipConfig<N: FieldExt> {
 #[derive(Default, Clone)]
 struct TestCircuit<N: FieldExt> {
     records: Records<N>,
+    pub_key_x_assigned_vals: Vec<AssignedValue<N>>,
 }
 
 const TEST_STEP: usize = 32;
@@ -68,6 +70,7 @@ impl<N: FieldExt + poseidonhash::Hashable> Circuit<N> for TestCircuit<N> {
     ) -> Result<(), Error> {
         let base_chip = BaseChip::new(config.base_chip_config);
         let range_chip = RangeChip::<N>::new(config.range_chip_config);
+        range_chip.init_table(&mut layouter)?;
 
         // poseidon
         let message1 = [
@@ -87,8 +90,6 @@ impl<N: FieldExt + poseidonhash::Hashable> Circuit<N> for TestCircuit<N> {
         );
         poseidon_chip.load(&mut layouter).unwrap();
 
-        range_chip.init_table(&mut layouter)?;
-
         layouter.assign_region(
             || "base",
             |mut region| {
@@ -105,38 +106,59 @@ impl<N: FieldExt + poseidonhash::Hashable> Circuit<N> for TestCircuit<N> {
 }
 
 fn main() {
-    println!("Hello, bls!");
+    println!("process pos snark 2!");
 
     let ctx = Rc::new(RefCell::new(Context::new()));
     let mut ctx = GeneralScalarEccContext::<G1Affine, Fr>::new(ctx);
 
-    let a = G1::random(&mut OsRng);
+    // prepare g1, sig, pubkey, signMsg
+    let prv_key_scalar_1 = halo2_proofs::pairing::bls12_381::Fr::random(&mut OsRng);
+    let prv_key_scalar_2 = halo2_proofs::pairing::bls12_381::Fr::random(&mut OsRng);
 
-    let b = G2Affine::from(G2::random(&mut OsRng));
-    let c = halo2_proofs::pairing::bls12_381::Fr::random(&mut OsRng);
-    let ac = a * c;
-    let bc = G2Affine::from(b * c);
+    let pub_key_1 = G1::generator() * prv_key_scalar_1;
+    let pub_key_2 = G1::generator() * prv_key_scalar_2;
 
-    let bx = ctx.fq2_assign_constant((b.x.c0, b.x.c1));
-    let by = ctx.fq2_assign_constant((b.y.c0, b.y.c1));
-    let b = AssignedG2Affine::new(
-        bx,
-        by,
+    let sign_msg = G2Affine::from(G2::random(&mut OsRng));
+    let sig = G2Affine::from(sign_msg * (prv_key_scalar_1 + prv_key_scalar_2));
+
+    // assign pub keys.
+    let assigned_pub_key_1 = ctx.assign_point(&pub_key_1);
+    let assigned_pub_key_2 = ctx.assign_point(&pub_key_2);
+
+    let mut pub_key_x_assigned_vals: Vec<AssignedValue<Fr>> = Vec::new();
+    let mut pub_key_1_limbs = assigned_pub_key_1.x.limbs_le.clone();
+    let mut pub_key_2_limbs = assigned_pub_key_2.x.limbs_le.clone();
+    pub_key_x_assigned_vals.append(&mut pub_key_1_limbs);
+    pub_key_x_assigned_vals.append(&mut pub_key_2_limbs);
+
+    // agg pub keys.
+    // TODO add recursive.
+    let assigned_pub_key_1_with_cvr = ctx.to_point_with_curvature(assigned_pub_key_1);
+    let assigned_pub_key_agg = ctx.ecc_add(&assigned_pub_key_1_with_cvr, &assigned_pub_key_2);
+
+    // assign G1 generator
+    let g1_generate = G1::generator();
+    let assigned_g1_generate = ctx.assign_point(&g1_generate);
+    let assigned_g1_generate_neg = ctx.assign_point(&g1_generate.neg());
+
+    // assign sig
+    let sig_x = ctx.fq2_assign_constant((sig.x.c0, sig.x.c1));
+    let sig_y = ctx.fq2_assign_constant((sig.y.c0, sig.y.c1));
+    let assigned_sig: AssignedG2Affine<G1Affine, Fr> = AssignedG2Affine::new(
+        sig_x,
+        sig_y,
+        AssignedCondition(ctx.native_ctx.borrow_mut().assign_constant(Fr::zero())),
+    );
+    // assign sign msg
+    let sign_msg_x = ctx.fq2_assign_constant((sign_msg.x.c0, sign_msg.x.c1));
+    let sign_msg_y = ctx.fq2_assign_constant((sign_msg.y.c0, sign_msg.y.c1));
+    let assigned_sign_msg: AssignedG2Affine<G1Affine, Fr> = AssignedG2Affine::new(
+        sign_msg_x,
+        sign_msg_y,
         AssignedCondition(ctx.native_ctx.borrow_mut().assign_constant(Fr::zero())),
     );
 
-    let bcx = ctx.fq2_assign_constant((bc.x.c0, bc.x.c1));
-    let bcy = ctx.fq2_assign_constant((bc.y.c0, bc.y.c1));
-    let bc = AssignedG2Affine::new(
-        bcx,
-        bcy,
-        AssignedCondition(ctx.native_ctx.borrow_mut().assign_constant(Fr::zero())),
-    );
-
-    let neg_a = ctx.assign_point(&-a);
-    let ac = ctx.assign_point(&ac);
-
-    ctx.check_pairing(&[(&ac, &b), (&neg_a, &bc)]);
+    ctx.check_pairing(&[(&assigned_g1_generate_neg, &assigned_sig), (&assigned_pub_key_agg, &assigned_sign_msg)]);
 
     let in_ctx: Context<Fr> = ctx.into();
 
@@ -144,6 +166,7 @@ fn main() {
 
     let circuit = TestCircuit::<Fr> {
         records: Arc::try_unwrap(in_ctx.records).unwrap().into_inner().unwrap(),
+        pub_key_x_assigned_vals,
     };
 
     let k = 22;
