@@ -34,7 +34,7 @@ struct TestChipConfig<N: FieldExt> {
 #[derive(Default, Clone)]
 struct TestCircuit<N: FieldExt> {
     records: Records<N>,
-    pub_key_x_assigned_vals: Vec<AssignedValue<N>>,
+    pub_key_x_assigned_vals: Vec<N>,
 }
 
 const TEST_STEP: usize = 32;
@@ -72,13 +72,10 @@ impl<N: FieldExt + poseidonhash::Hashable> Circuit<N> for TestCircuit<N> {
         let range_chip = RangeChip::<N>::new(config.range_chip_config);
         range_chip.init_table(&mut layouter)?;
 
-        // poseidon
-        let message1 = [
-            N::from_str_vartime("1").unwrap(),
-            N::from_str_vartime("2").unwrap(),
-        ];
+        let poseidon_inputs = self.pub_key_x_assigned_vals.chunks(2).map(|w| [w[0], w[1]]).collect::<Vec<_>>();
+
         let poseidon_hash_table = PoseidonHashTable {
-            inputs: vec![message1],
+            inputs: poseidon_inputs,
             ..Default::default()
         };
         let poseidon_chip = PoseidonHashChip::<N, TEST_STEP>::construct(
@@ -125,9 +122,9 @@ fn main() {
     let assigned_pub_key_1 = ctx.assign_point(&pub_key_1);
     let assigned_pub_key_2 = ctx.assign_point(&pub_key_2);
 
-    let mut pub_key_x_assigned_vals: Vec<AssignedValue<Fr>> = Vec::new();
-    let mut pub_key_1_limbs = assigned_pub_key_1.x.limbs_le.clone();
-    let mut pub_key_2_limbs = assigned_pub_key_2.x.limbs_le.clone();
+    let mut pub_key_x_assigned_vals: Vec<Fr> = Vec::new();
+    let mut pub_key_1_limbs = assigned_pub_key_1.x.limbs_le.iter().map(|w| w.val).collect::<Vec<_>>();
+    let mut pub_key_2_limbs = assigned_pub_key_2.x.limbs_le.iter().map(|w| w.val).collect::<Vec<_>>();;
     pub_key_x_assigned_vals.append(&mut pub_key_1_limbs);
     pub_key_x_assigned_vals.append(&mut pub_key_2_limbs);
 
