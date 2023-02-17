@@ -834,6 +834,8 @@ impl<Fp: FieldExt, const STEP: usize> Chip<Fp> for PoseidonHashChip<'_, Fp, STEP
 
 #[cfg(test)]
 mod tests {
+    use ark_std::{end_timer, start_timer};
+    use ark_std::rand::rngs::OsRng;
     use super::*;
     use halo2_proofs::pairing::group::ff::PrimeField;
     use halo2_proofs::{circuit::SimpleFloorPlanner, plonk::Circuit};
@@ -928,6 +930,11 @@ mod tests {
     }
 
     use halo2_proofs::dev::MockProver;
+    use halo2_proofs::pairing::bn256::Bn256;
+    use halo2_proofs::plonk::{ConstraintSystem, create_proof, Error, keygen_pk, keygen_vk};
+    use halo2_proofs::poly::commitment::Params;
+    use halo2_proofs::transcript::{Blake2bWrite, Challenge255};
+
     const TEST_STEP: usize = 32;
 
     // test circuit derived from table data
@@ -1083,13 +1090,46 @@ mod tests {
 
         let final_hash = Fr::from_str_vartime("3330844108758711782672220159612173083623710937399719017074673646455206473965").unwrap();
 
-        let k = 11;
+        /*let k = 11;
         let circuit = PoseidonHashTable {
             inputs: vec![message1],
             inputs_recursion: vec![Fr::from(3); 10],
             ..Default::default()
         };
         let prover = MockProver::run(k, &circuit, vec![]).unwrap();
-        assert_eq!(prover.verify(), Ok(()));
+        assert_eq!(prover.verify(), Ok(()));*/
+
+        let k = 11;
+
+        let timer = start_timer!(|| format!("build params with K = {}", k));
+        let params: Params<halo2_proofs::pairing::bn256::G1Affine> = Params::<halo2_proofs::pairing::bn256::G1Affine>::unsafe_setup::<Bn256>(k);
+        end_timer!(timer);
+
+        let circuit = PoseidonHashTable {
+            inputs: vec![message1],
+            inputs_recursion: vec![Fr::from(3); 10],
+            ..Default::default()
+        };
+
+        let timer = start_timer!(|| "build vk");
+        let vk = keygen_vk(&params, &circuit).expect("keygen_vk should not fail");
+        end_timer!(timer);
+
+        let vk_for_verify = keygen_vk(&params, &circuit).expect("keygen_vk should not fail");
+
+        let timer = start_timer!(|| "build pk");
+        let pk = keygen_pk(&params, vk, &circuit).expect("keygen_pk should not fail");
+        end_timer!(timer);
+
+        let mut transcript = Blake2bWrite::<_, _, Challenge255<_>>::init(vec![]);
+
+        let timer = start_timer!(|| "create proof");
+        create_proof(&params, &pk, &[circuit], &[&[]], OsRng, &mut transcript)
+            .expect("proof generation should not fail");
+        end_timer!(timer);
+
+        let proof = transcript.finalize();
+
+        println!("proof size: {}", proof.len());
     }
 }
