@@ -60,6 +60,7 @@ use halo2_proofs::{
     plonk::{Advice, Column, ConstraintSystem, Error, Expression, Fixed, Selector, TableColumn},
     poly::Rotation,
 };
+use halo2_proofs::circuit::AssignedCell;
 
 /// The config for poseidon hash circuit
 #[derive(Clone, Debug)]
@@ -252,6 +253,8 @@ impl<Fp: Hashable> PoseidonHashConfig<Fp> {
 pub struct PoseidonHashTable<Fp> {
     /// the input messages for hashes
     pub inputs: Vec<[Fp; 2]>,
+    /// the input messages for hashes
+    pub inputs_recursion: Vec<Fp>,
     /// the control flag for each permutation
     pub controls: Vec<Fp>,
     /// the expected hash output for checking
@@ -439,19 +442,12 @@ impl<'d, Fp: Hashable, const STEP: usize> PoseidonHashChip<'d, Fp, STEP> {
             .chain(std::iter::repeat(None))
             .take(self.calcs);
 
-        let checks_i = data
-            .checks
-            .iter()
-            .map(|i| i.as_ref())
-            .chain(std::iter::repeat(None))
-            .take(self.calcs);
-
         let mut is_new_sponge = true;
         let mut process_start = 0;
         let mut state: [Fp; 3] = [Fp::zero(); 3];
         let mut last_offset = 0;
 
-        for (i, ((inp, control), check)) in inputs_i.zip(controls_i).zip(checks_i).enumerate() {
+        for (i, (inp, control)) in inputs_i.zip(controls_i).enumerate() {
             let control = control.copied().unwrap_or_else(Fp::zero);
             let offset = i + begin_offset;
             last_offset = offset;
@@ -476,13 +472,155 @@ impl<'d, Fp: Hashable, const STEP: usize> PoseidonHashChip<'d, Fp, STEP> {
             let state_start = state;
             hash_helper.permute(&mut state); //here we calculate the hash
 
-            //and sanity check ...
-            if let Some(ck) = check {
-                assert_eq!(
-                    *ck, state[0],
-                    "hash output not match with expected at {offset}"
-                );
+            let current_hash = state[0];
+
+            //assignment ...
+            config.s_table.enable(region, offset)?;
+
+            let c_start = [0; 3]
+                .into_iter()
+                .enumerate()
+                .map(|(i, _)| {
+                    region.assign_advice(
+                        || format!("state input {i}_{offset}"),
+                        config.hash_table_aux[i],
+                        offset,
+                        || Value::known(state_start[i]).inner.ok_or(Error::Synthesis),
+                    )
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+
+            let c_end = [5, 3, 4]
+                .into_iter()
+                .enumerate()
+                .map(|(i, j)| {
+                    region.assign_advice(
+                        || format!("state output {i}_{offset}"),
+                        config.hash_table_aux[j],
+                        offset,
+                        || Value::known(state[i]).inner.ok_or(Error::Synthesis),
+                    )
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+
+            for (tip, col, val) in [
+                ("hash input first", config.hash_table[1], inp[0]),
+                ("hash input second", config.hash_table[2], inp[1]),
+                ("state input control", config.hash_table[3], control),
+                (
+                    "state beginning flag",
+                    config.hash_table[4],
+                    if is_new_sponge { Fp::one() } else { Fp::zero() },
+                ),
+                (
+                    "state input control_aux",
+                    config.control_aux,
+                    control.invert().unwrap_or_else(Fp::zero),
+                ),
+                (
+                    "state continue control",
+                    config.s_sponge_continue,
+                    if is_new_sponge { Fp::zero() } else { Fp::one() },
+                ),
+            ] {
+                region.assign_advice(
+                    || format!("{tip}_{offset}"),
+                    col,
+                    offset,
+                    || Value::known(val).inner.ok_or(Error::Synthesis),
+                )?;
             }
+
+            is_new_sponge = control <= Fp::from_u128(STEP as u128);
+
+            //fill all the hash_table[0] with result hash
+            if is_new_sponge {
+                (process_start..=offset).try_for_each(|ith| {
+                    region
+                        .assign_advice(
+                            || format!("hash index_{ith}"),
+                            config.hash_table[0],
+                            ith,
+                            || Value::known(current_hash).inner.ok_or(Error::Synthesis),
+                        )
+                        .map(|_| ())
+                })?;
+            }
+
+            //we directly specify the init state of permutation
+            let c_start_arr: [_; 3] = c_start.try_into().expect("same size");
+            states_in.push(c_start_arr.map(StateWord::from));
+            let c_end_arr: [_; 3] = c_end.try_into().expect("same size");
+            states_out.push(c_end_arr.map(StateWord::from));
+        }
+
+        // set the last row is "custom", a row both enabled and customed
+        // can only fill a padding row ([0, 0] in MPT mode)
+        config.s_custom.enable(region, last_offset)?;
+        Ok((states_in, states_out))
+    }
+
+    fn fill_hash_tbl_body2(
+        &self,
+        region: &mut Region<'_, Fp>,
+        begin_offset: usize,
+        prehash: AssignedCell<Fp, Fp>,
+        next_val_idx: usize,
+    ) -> Result<(PermutedState<Fp>, PermutedState<Fp>), Error> {
+        let config = &self.config;
+        let data = self.data;
+
+        let mut states_in = Vec::new();
+        let mut states_out = Vec::new();
+        let hash_helper = Fp::hasher();
+
+        let inputs_i = data
+            .inputs
+            .iter()
+            .map(Some)
+            .chain(std::iter::repeat(None))
+            .take(self.calcs);
+        let controls_i = data
+            .controls
+            .iter()
+            .map(Some)
+            .chain(std::iter::repeat(None))
+            .take(self.calcs);
+
+        let mut is_new_sponge = true;
+        let mut process_start = 0;
+        let mut state: [Fp; 3] = [Fp::zero(); 3];
+        let mut last_offset = 0;
+
+        for (i, (inp, control)) in inputs_i.zip(controls_i).enumerate() {
+            let control = control.copied().unwrap_or_else(Fp::zero);
+            let offset = i + begin_offset;
+            last_offset = offset;
+
+            if is_new_sponge {
+                state[0] = control;
+                process_start = offset;
+            }
+
+            let mut inp = inp
+                .map(|[a, b]| [*a, *b])
+                .unwrap_or_else(|| [Fp::zero(), Fp::zero()]);
+
+            if i == 0 {
+                //let inp: [Fp; 2] = [*inputs_array[0].value().unwrap(), *inputs_array[1].value().unwrap()];
+                inp = [*prehash.value().unwrap(), self.data.inputs_recursion[next_val_idx]];
+            }
+
+            state.iter_mut().skip(1).zip(inp).for_each(|(s, inp)| {
+                if is_new_sponge {
+                    *s = inp;
+                } else {
+                    *s += inp;
+                }
+            });
+
+            let state_start = state;
+            hash_helper.permute(&mut state); //here we calculate the hash
 
             let current_hash = state[0];
 
@@ -592,7 +730,7 @@ impl<'d, Fp: Hashable, const STEP: usize> PoseidonHashChip<'d, Fp, STEP> {
             },
         )?;
 
-        let (states_in, states_out) = layouter.assign_region(
+        let (first_states_in, first_states_out) = layouter.assign_region(
             || "hash table",
             |mut region| {
                 let offset = self.fill_hash_tbl_custom(&mut region)?;
@@ -601,7 +739,7 @@ impl<'d, Fp: Hashable, const STEP: usize> PoseidonHashChip<'d, Fp, STEP> {
         )?;
 
         let mut chip_finals = Vec::new();
-        for state in states_in {
+        for state in first_states_in {
             let chip = Pow5Chip::construct(config.permute_config.clone());
 
             let final_state =
@@ -612,10 +750,10 @@ impl<'d, Fp: Hashable, const STEP: usize> PoseidonHashChip<'d, Fp, STEP> {
             chip_finals.push(final_state);
         }
 
-        layouter.assign_region(
+        let _ = layouter.assign_region(
             || "final state dummy",
             |mut region| {
-                for (state, final_state) in states_out.iter().zip(chip_finals.iter()) {
+                for (state, final_state) in first_states_out.iter().zip(chip_finals.iter()) {
                     for (s_cell, final_cell) in state.iter().zip(final_state.iter()) {
                         region.constrain_equal(s_cell.cell(), final_cell.cell())?;
                     }
@@ -623,7 +761,62 @@ impl<'d, Fp: Hashable, const STEP: usize> PoseidonHashChip<'d, Fp, STEP> {
 
                 Ok(())
             },
-        )
+        );
+
+        let mut pre_out_put_hash_cell = first_states_out.clone()[0][0].clone();
+        for i in 0..self.data.inputs_recursion.len() {
+            println!("loop {}", i);
+            let (states_in, states_out) = layouter.assign_region(
+                || "hash table",
+                |mut region| {
+                    let offset = self.fill_hash_tbl_custom(&mut region)?;
+                    self.fill_hash_tbl_body2(&mut region, offset, pre_out_put_hash_cell.clone().into(), i)
+
+                },
+            )?;
+
+            println!("start");
+            layouter.assign_region(
+                || "copy constraint",
+                |mut region| {
+                    region.constrain_equal(pre_out_put_hash_cell.clone().cell(), states_in[0][1].cell());
+
+                    println!("pre:   {:?}", pre_out_put_hash_cell.clone().value());
+                    println!("curin: {:?}", states_in[0][1].value());
+
+                    Ok(())
+                },
+            );
+            println!("end");
+
+            let mut chip_finals = Vec::new();
+            for state in states_in {
+                let chip = Pow5Chip::construct(config.permute_config.clone());
+
+                let final_state =
+                    <Pow5Chip<_, 3, 2> as PoseidonInstructions<Fp, Fp::SpecType, 3, 2>>::permute(
+                        &chip, layouter, &state,
+                    )?;
+
+                chip_finals.push(final_state);
+            }
+
+            pre_out_put_hash_cell = states_out.clone()[0][0].clone();
+
+            layouter.assign_region(
+                || "final state dummy",
+                |mut region| {
+                    for (state, final_state) in states_out.iter().zip(chip_finals.iter()) {
+                        for (s_cell, final_cell) in state.iter().zip(final_state.iter()) {
+                            region.constrain_equal(s_cell.cell(), final_cell.cell())?;
+                        }
+                    }
+
+                    Ok(())
+                },
+            );
+        };
+        Ok(())
     }
 }
 
@@ -648,14 +841,58 @@ mod tests {
     #[test]
     fn poseidon_hash() {
         println!("hello, poseidon, this is poseidon_hash test");
-        let b1: Fr = Fr::from_str_vartime("1").unwrap();
-        let b2: Fr = Fr::from_str_vartime("2").unwrap();
+        //let b1: Fr = Fr::from_str_vartime("1").unwrap();
+        //let b2: Fr = Fr::from_str_vartime("2").unwrap();
+        let b1: Fr = Fr::from(1);
+        let b2: Fr = Fr::from(2);
 
         let h = Fr::hash([b1, b2]);
         assert_eq!(
             format!("{:?}", h),
             "0x115cc0f5e7d690413df64c6b9662e9cf2a3617f2743245519e19607a4417189a" // "7853200120776062878684798364095072458815029376092732009249414926327459813530"
         );
+
+        let b3: Fr = Fr::from(3);
+        let b4: Fr = Fr::from(4);
+
+        let h2 = Fr::hash([b3, b4]);
+        assert_eq!(
+            format!("{:?}", h2),
+            "0x20a3af0435914ccd84b806164531b0cd36e37d4efb93efab76913a93e1f30996" // "14763215145315200506921711489642608356394854266165572616578112107564877678998"
+        );
+
+        let b12: Fr = Fr::from_str_vartime("7853200120776062878684798364095072458815029376092732009249414926327459813530").unwrap();
+        let b34: Fr = Fr::from_str_vartime("14763215145315200506921711489642608356394854266165572616578112107564877678998").unwrap();
+
+        let h1234 = Fr::hash([b12, b34]);
+        assert_eq!(
+            format!("{:?}", h1234),
+            "0x075d30e28d48842bd6c1044b68f982d586e2892ae91c77f8f56111d8f55070ed" // "3330844108758711782672220159612173083623710937399719017074673646455206473965"
+        );
+
+
+        let message1 = [
+            Fr::from(1),
+            Fr::from(2),
+        ];
+        let message2 = [
+            Fr::from(3),
+            Fr::from(4),
+        ];
+
+        let message1_hash = Fr::from_str_vartime("7853200120776062878684798364095072458815029376092732009249414926327459813530").unwrap();
+        let message2_hash = Fr::from_str_vartime("14763215145315200506921711489642608356394854266165572616578112107564877678998").unwrap();
+
+        let message3 = [
+            Fr::from_str_vartime("7853200120776062878684798364095072458815029376092732009249414926327459813530").unwrap(),
+            Fr::from_str_vartime("14763215145315200506921711489642608356394854266165572616578112107564877678998").unwrap(),
+        ];
+
+        let h123 = Fr::hash([message1_hash, Fr::from(3)]);
+        println!("{:?}", h123);
+
+        let xh1234 = Fr::hash([h123, Fr::from(4)]);
+        println!("{:?}", xh1234);
     }
 
     #[test]
@@ -818,6 +1055,38 @@ mod tests {
         assert_eq!(prover.verify(), Ok(()));
 
         let circuit = PoseidonHashTable::<Fr> {
+            ..Default::default()
+        };
+        let prover = MockProver::run(k, &circuit, vec![]).unwrap();
+        assert_eq!(prover.verify(), Ok(()));
+    }
+
+    #[test]
+    fn poseidon_var_len_hash_circuit_v2() {
+        println!("hello poseidon_var_len_hash_circuit_v2");
+        let message1 = [
+            Fr::from(1),
+            Fr::from(2),
+        ];
+        let message2 = [
+            Fr::from(3),
+            Fr::from(4),
+        ];
+
+        let message1_hash = Fr::from_str_vartime("7853200120776062878684798364095072458815029376092732009249414926327459813530").unwrap();
+        let message2_hash = Fr::from_str_vartime("14763215145315200506921711489642608356394854266165572616578112107564877678998").unwrap();
+
+        let message3 = [
+            Fr::from_str_vartime("7853200120776062878684798364095072458815029376092732009249414926327459813530").unwrap(),
+            Fr::from_str_vartime("14763215145315200506921711489642608356394854266165572616578112107564877678998").unwrap(),
+        ];
+
+        let final_hash = Fr::from_str_vartime("3330844108758711782672220159612173083623710937399719017074673646455206473965").unwrap();
+
+        let k = 11;
+        let circuit = PoseidonHashTable {
+            inputs: vec![message1],
+            inputs_recursion: vec![Fr::from(3); 10],
             ..Default::default()
         };
         let prover = MockProver::run(k, &circuit, vec![]).unwrap();
