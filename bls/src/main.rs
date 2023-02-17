@@ -1,3 +1,5 @@
+extern crate core;
+
 use std::cell::RefCell;
 use std::ops::Neg;
 use std::rc::Rc;
@@ -76,6 +78,7 @@ impl<N: FieldExt + poseidonhash::Hashable> Circuit<N> for TestCircuit<N> {
 
         let poseidon_hash_table = PoseidonHashTable {
             inputs: poseidon_inputs,
+            inputs_recursion: [N::from(3); 100].to_vec(),
             ..Default::default()
         };
         let poseidon_chip = PoseidonHashChip::<N, TEST_STEP>::construct(
@@ -166,13 +169,13 @@ fn main() {
         pub_key_x_assigned_vals,
     };
 
-    let k = 22;
+    /*let k = 22;
     let timer_mock_prover = start_timer!(|| "mock_prover");
     let prover = MockProver::run(k, &circuit, vec![]).unwrap();
-    end_timer!(timer_mock_prover);
+    end_timer!(timer_mock_prover);*/
     //assert_eq!(prover.verify(), Ok(()));
 
-    /*let k = 22;
+    let k = 22;
 
     let timer = start_timer!(|| format!("build params with K = {}", k));
     let params: Params<halo2_proofs::pairing::bn256::G1Affine> = Params::<halo2_proofs::pairing::bn256::G1Affine>::unsafe_setup::<Bn256>(k);
@@ -197,7 +200,7 @@ fn main() {
 
     let proof = transcript.finalize();
 
-    println!("proof size: {}", proof.len());*/
+    println!("proof size: {}", proof.len());
 
     /*let params_verifier: ParamsVerifier<Bn256> = params.verifier(0).unwrap();
 
