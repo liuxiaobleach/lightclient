@@ -766,7 +766,6 @@ impl<'d, Fp: Hashable, const STEP: usize> PoseidonHashChip<'d, Fp, STEP> {
 
         let mut pre_out_put_hash_cell = first_states_out.clone()[0][0].clone();
         for i in 0..self.data.inputs_recursion.len() {
-            println!("loop {}", i);
             let (states_in, states_out) = layouter.assign_region(
                 || "hash table",
                 |mut region| {
@@ -776,19 +775,14 @@ impl<'d, Fp: Hashable, const STEP: usize> PoseidonHashChip<'d, Fp, STEP> {
                 },
             )?;
 
-            println!("start");
             layouter.assign_region(
                 || "copy constraint",
                 |mut region| {
                     region.constrain_equal(pre_out_put_hash_cell.clone().cell(), states_in[0][1].cell());
 
-                    println!("pre:   {:?}", pre_out_put_hash_cell.clone().value());
-                    println!("curin: {:?}", states_in[0][1].value());
-
                     Ok(())
                 },
             );
-            println!("end");
 
             let mut chip_finals = Vec::new();
             for state in states_in {

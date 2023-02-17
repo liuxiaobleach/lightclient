@@ -16,9 +16,9 @@ use halo2_proofs::pairing::group::{Curve, Group};
 use halo2_proofs::arithmetic::Field;
 use halo2_proofs::circuit::{Layouter, SimpleFloorPlanner};
 use halo2_proofs::dev::MockProver;
-use halo2_proofs::plonk::{Circuit, ConstraintSystem, create_proof, Error, keygen_pk, keygen_vk};
-use halo2_proofs::poly::commitment::Params;
-use halo2_proofs::transcript::{Blake2bWrite, Challenge255};
+use halo2_proofs::plonk::{Circuit, ConstraintSystem, create_proof, Error, keygen_pk, keygen_vk, SingleVerifier, verify_proof};
+use halo2_proofs::poly::commitment::{Params, ParamsVerifier};
+use halo2_proofs::transcript::{Blake2bRead, Blake2bWrite, Challenge255};
 use halo2ecc_s::assign::{AssignedCondition, AssignedG2Affine, AssignedInteger, AssignedValue};
 use halo2ecc_s::circuit::base_chip::BaseChipOps;
 use halo2ecc_s::circuit::ecc_chip::EccChipBaseOps;
@@ -73,8 +73,6 @@ impl<N: FieldExt + poseidonhash::Hashable> Circuit<N> for TestCircuit<N> {
         let base_chip = BaseChip::new(config.base_chip_config);
         let range_chip = RangeChip::<N>::new(config.range_chip_config);
         range_chip.init_table(&mut layouter)?;
-
-        //let poseidon_inputs = self.pub_key_x_assigned_vals.chunks(2).map(|w| [w[0], w[1]]).collect::<Vec<_>>();
 
         let poseidon_hash_table = PoseidonHashTable {
             inputs: vec![[
@@ -205,7 +203,7 @@ fn main() {
 
     println!("proof size: {}", proof.len());
 
-    /*let params_verifier: ParamsVerifier<Bn256> = params.verifier(0).unwrap();
+    let params_verifier: ParamsVerifier<Bn256> = params.verifier(0).unwrap();
 
     let strategy = SingleVerifier::new(&params_verifier);
     let mut transcript = Blake2bRead::<_, _, Challenge255<_>>::init(&proof[..]);
@@ -219,5 +217,5 @@ fn main() {
         &mut transcript,
     )
         .unwrap();
-    end_timer!(timer);*/
+    end_timer!(timer);
 }
