@@ -74,11 +74,14 @@ impl<N: FieldExt + poseidonhash::Hashable> Circuit<N> for TestCircuit<N> {
         let range_chip = RangeChip::<N>::new(config.range_chip_config);
         range_chip.init_table(&mut layouter)?;
 
-        let poseidon_inputs = self.pub_key_x_assigned_vals.chunks(2).map(|w| [w[0], w[1]]).collect::<Vec<_>>();
+        //let poseidon_inputs = self.pub_key_x_assigned_vals.chunks(2).map(|w| [w[0], w[1]]).collect::<Vec<_>>();
 
         let poseidon_hash_table = PoseidonHashTable {
-            inputs: poseidon_inputs,
-            inputs_recursion: [N::from(3); 100].to_vec(),
+            inputs: vec![[
+                N::from(1),
+                N::from(2),
+            ]],
+            inputs_recursion: [N::from(3); 510].to_vec(),
             ..Default::default()
         };
         let poseidon_chip = PoseidonHashChip::<N, TEST_STEP>::construct(

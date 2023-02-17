@@ -607,8 +607,9 @@ impl<'d, Fp: Hashable, const STEP: usize> PoseidonHashChip<'d, Fp, STEP> {
                 .unwrap_or_else(|| [Fp::zero(), Fp::zero()]);
 
             if i == 0 {
-                //let inp: [Fp; 2] = [*inputs_array[0].value().unwrap(), *inputs_array[1].value().unwrap()];
-                inp = [*prehash.value().unwrap(), self.data.inputs_recursion[next_val_idx]];
+                // why will panic with none?
+                //inp = [*prehash.value().unwrap(), self.data.inputs_recursion[next_val_idx]];
+                inp = [*prehash.value().unwrap_or(&Fp::zero()), self.data.inputs_recursion[next_val_idx]];
             }
 
             state.iter_mut().skip(1).zip(inp).for_each(|(s, inp)| {
@@ -931,9 +932,9 @@ mod tests {
 
     use halo2_proofs::dev::MockProver;
     use halo2_proofs::pairing::bn256::Bn256;
-    use halo2_proofs::plonk::{ConstraintSystem, create_proof, Error, keygen_pk, keygen_vk};
-    use halo2_proofs::poly::commitment::Params;
-    use halo2_proofs::transcript::{Blake2bWrite, Challenge255};
+    use halo2_proofs::plonk::{ConstraintSystem, create_proof, Error, keygen_pk, keygen_vk, SingleVerifier, verify_proof};
+    use halo2_proofs::poly::commitment::{Params, ParamsVerifier};
+    use halo2_proofs::transcript::{Blake2bRead, Blake2bWrite, Challenge255};
 
     const TEST_STEP: usize = 32;
 
@@ -1099,7 +1100,7 @@ mod tests {
         let prover = MockProver::run(k, &circuit, vec![]).unwrap();
         assert_eq!(prover.verify(), Ok(()));*/
 
-        let k = 11;
+        let k = 17;
 
         let timer = start_timer!(|| format!("build params with K = {}", k));
         let params: Params<halo2_proofs::pairing::bn256::G1Affine> = Params::<halo2_proofs::pairing::bn256::G1Affine>::unsafe_setup::<Bn256>(k);
@@ -1107,7 +1108,7 @@ mod tests {
 
         let circuit = PoseidonHashTable {
             inputs: vec![message1],
-            inputs_recursion: vec![Fr::from(3); 2],
+            inputs_recursion: vec![Fr::from(3); 510],
             ..Default::default()
         };
 
@@ -1115,7 +1116,7 @@ mod tests {
         let vk = keygen_vk(&params, &circuit).expect("keygen_vk should not fail");
         end_timer!(timer);
 
-        /*let vk_for_verify = keygen_vk(&params, &circuit).expect("keygen_vk should not fail");
+        let vk_for_verify = keygen_vk(&params, &circuit).expect("keygen_vk should not fail");
 
         let timer = start_timer!(|| "build pk");
         let pk = keygen_pk(&params, vk, &circuit).expect("keygen_pk should not fail");
@@ -1130,6 +1131,22 @@ mod tests {
 
         let proof = transcript.finalize();
 
-        println!("proof size: {}", proof.len());*/
+        println!("proof size: {}", proof.len());
+
+        let params_verifier: ParamsVerifier<Bn256> = params.verifier(0).unwrap();
+
+        let strategy = SingleVerifier::new(&params_verifier);
+        let mut transcript = Blake2bRead::<_, _, Challenge255<_>>::init(&proof[..]);
+
+        let timer = start_timer!(|| "verify proof");
+        verify_proof(
+            &params_verifier,
+            &vk_for_verify,
+            strategy,
+            &[&[]],
+            &mut transcript,
+        )
+            .unwrap();
+        end_timer!(timer);
     }
 }
